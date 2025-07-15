@@ -1,119 +1,248 @@
 import streamlit as st
 import pandas as pd
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+import requests
+from datetime import datetime
+import plotly.express as px
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="VIDeMI Reservation Manager", layout="wide")
-st.title("🏠 VIDeMI Reservation Manager")
+# Set page config
+st.set_page_config(
+    page_title="Kroon Beheer Reservations Dashboard",
+    page_icon="📊",
+    layout="wide"
+)
 
-st.markdown("""
-Welcome to the **VIDeMI Reservations Manager**!  
-✅ Upload your reservation CSV.  
-✅ Clean and extract only reservation data.  
-✅ Edit, Add, Delete rows.  
-✅ Export updated CSV.
-""")
+@st.cache_data
+def load_data():
+    """Load and process the CSV data from the URL"""
+    url = "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/Reservations%20Kroon%20Beheer%20BV%20-%20Kroon%20Beheer%20Client%20Info%20-oceEo2u6q6oDwnLyd8QoSnJqzEPSTa.csv"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # Save content to a temporary file-like object
+        from io import StringIO
+        csv_content = StringIO(response.text)
+        
+        # Read CSV
+        df = pd.read_csv(csv_content)
+        
+        # Clean column names
+        df.columns = df.columns.str.strip()
+        
+        return df
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None
 
-# --- Step 1: Upload CSV
-st.header("📤 1. Upload Your Reservations CSV")
-uploaded_file = st.file_uploader("Upload CSV file", type=['csv'])
+def process_date_columns(df):
+    """Process and identify date columns"""
+    date_columns = []
+    
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Try to convert to datetime
+            try:
+                pd.to_datetime(df[col], errors='raise')
+                date_columns.append(col)
+                df[col] = pd.to_datetime(df[col])
+            except:
+                pass
+    
+    return df, date_columns
 
-if uploaded_file:
-    raw_df = pd.read_csv(uploaded_file)
-
-    st.subheader("👀 Preview Raw Data (first 10 rows)")
-    st.dataframe(raw_df.head(10))
-
-    # --- Step 2: Clean & Extract Reservations Table
-    st.header("🧹 2. Extract Reservation Data")
-    reservation_cols = [
-        'DATE', 'VILLA', 'TYPE CLEAN', 'PAX',
-        'START TIME', 'RESERVATION STATUS',
-        'LAUNDRY', 'COMMENTS'
-    ]
-
-    # Try to filter for only those columns if present
-    possible_cols = [col for col in reservation_cols if col in raw_df.columns]
-    if not possible_cols:
-        st.error("No matching reservation columns found. Please check your CSV.")
+def main():
+    st.title("📊 Kroon Beheer Reservations Dashboard")
+    st.markdown("---")
+    
+    # Load data
+    with st.spinner("Loading reservation data..."):
+        df = load_data()
+    
+    if df is None:
         st.stop()
-
-    # Drop obviously bad rows (with all NAs or all 'NONE')
-    df = raw_df[possible_cols].copy()
-    df = df.dropna(how='all')
-    df = df[~df['DATE'].astype(str).str.contains('WEEK|NONE', na=False)]
-    df = df.dropna(subset=['DATE', 'VILLA'], how='all')
-
-    st.success(f"Extracted {len(df)} valid reservation rows.")
-
-    st.subheader("✅ Cleaned Reservation Data Preview")
-    st.dataframe(df.head(10))
-
-    # --- Step 3: Work Session State
-    if 'data' not in st.session_state:
-        st.session_state['data'] = df.copy()
-
-    st.header("📋 3. Manage Reservations Table")
-    st.markdown("""
-    👉 **Edit directly in the table.**  
-    👉 **Select a row to delete.**  
-    👉 **Add new reservations below.**
-    """)
-
-    gb = GridOptionsBuilder.from_dataframe(st.session_state['data'])
-    gb.configure_pagination()
-    gb.configure_default_column(editable=True, filter=True)
-    gb.configure_selection('single', use_checkbox=True)
-    grid_options = gb.build()
-
-    grid_response = AgGrid(
-        st.session_state['data'],
-        gridOptions=grid_options,
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        allow_unsafe_jscode=True,
-        height=400,
-        fit_columns_on_grid_load=True
+    
+    # Process dates
+    df, date_columns = process_date_columns(df)
+    
+    # Sidebar filters
+    st.sidebar.header("🔍 Filters")
+    
+    # Show basic info
+    st.sidebar.metric("Total Records", len(df))
+    st.sidebar.metric("Total Columns", len(df.columns))
+    
+    # Column selection for display
+    display_columns = st.sidebar.multiselect(
+        "Select Columns to Display",
+        options=df.columns.tolist(),
+        default=df.columns.tolist()[:10] if len(df.columns) > 10 else df.columns.tolist()
     )
+    
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.header("📋 Reservations Grid")
+        
+        if display_columns:
+            # Display the filtered dataframe
+            filtered_df = df[display_columns]
+            
+            # Add search functionality
+            search_term = st.text_input("🔍 Search in data:", placeholder="Enter search term...")
+            
+            if search_term:
+                # Search across all string columns
+                mask = filtered_df.astype(str).apply(
+                    lambda x: x.str.contains(search_term, case=False, na=False)
+                ).any(axis=1)
+                filtered_df = filtered_df[mask]
+            
+            # Display data with pagination
+            st.dataframe(
+                filtered_df,
+                use_container_width=True,
+                height=500
+            )
+            
+            # Download button
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Filtered Data",
+                data=csv,
+                file_name=f"kroon_beheer_reservations_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+    
+    with col2:
+        st.header("📈 Quick Stats")
+        
+        # Client profile stats if available
+        if 'Kroon Beheer Client Profile' in df.columns:
+            client_counts = df['Kroon Beheer Client Profile'].value_counts().head(10)
+            
+            st.subheader("Top Client Profiles")
+            for profile, count in client_counts.items():
+                st.metric(profile[:30] + "..." if len(profile) > 30 else profile, count)
+        
+        # Date-based stats
+        if date_columns:
+            st.subheader("📅 Date Analysis")
+            
+            for date_col in date_columns[:2]:  # Show first 2 date columns
+                if not df[date_col].isna().all():
+                    st.write(f"**{date_col}:**")
+                    
+                    # Date range
+                    min_date = df[date_col].min()
+                    max_date = df[date_col].max()
+                    
+                    if pd.notna(min_date) and pd.notna(max_date):
+                        st.write(f"From: {min_date.strftime('%Y-%m-%d')}")
+                        st.write(f"To: {max_date.strftime('%Y-%m-%d')}")
+                        
+                        # Monthly distribution
+                        monthly_counts = df[date_col].dt.to_period('M').value_counts().sort_index()
+                        
+                        if len(monthly_counts) > 0:
+                            fig = px.bar(
+                                x=monthly_counts.index.astype(str),
+                                y=monthly_counts.values,
+                                title=f"Monthly Distribution - {date_col}",
+                                labels={'x': 'Month', 'y': 'Count'}
+                            )
+                            fig.update_layout(height=300)
+                            st.plotly_chart(fig, use_container_width=True)
+    
+    # Additional analysis section
+    st.markdown("---")
+    st.header("🔍 Detailed Analysis")
+    
+    # Create tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📊 Summary Statistics", "📅 Date Insights", "🔍 Data Quality"])
+    
+    with tab1:
+        st.subheader("Column Summary")
+        
+        # Create summary stats
+        summary_data = []
+        for col in df.columns:
+            col_info = {
+                'Column': col,
+                'Type': str(df[col].dtype),
+                'Non-Null Count': df[col].count(),
+                'Null Count': df[col].isnull().sum(),
+                'Unique Values': df[col].nunique()
+            }
+            
+            if df[col].dtype in ['int64', 'float64']:
+                col_info['Mean'] = df[col].mean()
+                col_info['Min'] = df[col].min()
+                col_info['Max'] = df[col].max()
+            
+            summary_data.append(col_info)
+        
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True)
+    
+    with tab2:
+        if date_columns:
+            st.subheader("Date Column Analysis")
+            
+            for date_col in date_columns:
+                st.write(f"**Analysis for {date_col}:**")
+                
+                # Remove null dates for analysis
+                valid_dates = df[date_col].dropna()
+                
+                if len(valid_dates) > 0:
+                    col_a, col_b = st.columns(2)
+                    
+                    with col_a:
+                        st.metric("Valid Dates", len(valid_dates))
+                        st.metric("Date Range (Days)", (valid_dates.max() - valid_dates.min()).days)
+                    
+                    with col_b:
+                        # Day of week distribution
+                        dow_counts = valid_dates.dt.day_name().value_counts()
+                        fig = px.pie(
+                            values=dow_counts.values,
+                            names=dow_counts.index,
+                            title=f"Day of Week Distribution - {date_col}"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No date columns detected in the dataset.")
+    
+    with tab3:
+        st.subheader("Data Quality Overview")
+        
+        # Missing data heatmap
+        missing_data = df.isnull().sum()
+        missing_pct = (missing_data / len(df)) * 100
+        
+        quality_df = pd.DataFrame({
+            'Column': missing_data.index,
+            'Missing Count': missing_data.values,
+            'Missing Percentage': missing_pct.values
+        }).sort_values('Missing Percentage', ascending=False)
+        
+        st.dataframe(quality_df, use_container_width=True)
+        
+        # Visualization of missing data
+        if missing_pct.sum() > 0:
+            fig = px.bar(
+                quality_df.head(10),
+                x='Column',
+                y='Missing Percentage',
+                title="Top 10 Columns with Missing Data",
+                color='Missing Percentage',
+                color_continuous_scale='Reds'
+            )
+            fig.update_xaxes(tickangle=45)
+            st.plotly_chart(fig, use_container_width=True)
 
-    updated_df = grid_response['data']
-
-    # Save Changes Button
-    if st.button("💾 Save Edits to Session"):
-        st.session_state['data'] = updated_df.copy()
-        st.success("Changes saved!")
-
-    # --- Step 4: Delete Row
-    selected = grid_response['selected_rows']
-    if st.button("🗑️ Delete Selected Row") and selected:
-        sel_df = pd.DataFrame(selected)
-        before = len(st.session_state['data'])
-        st.session_state['data'] = st.session_state['data'][~st.session_state['data'].isin(sel_df.iloc[0]).all(axis=1)]
-        after = len(st.session_state['data'])
-        st.success(f"Deleted 1 row. Remaining rows: {after}")
-
-    # --- Step 5: Add New Row
-    st.header("➕ 4. Add New Reservation")
-    with st.form("new_reservation_form"):
-        st.write("Fill in the new reservation details:")
-        new_entry = {}
-        cols = st.columns(4)
-        for idx, col in enumerate(reservation_cols):
-            with cols[idx % 4]:
-                new_entry[col] = st.text_input(f"{col}", "")
-
-        submitted = st.form_submit_button("Add Reservation")
-        if submitted:
-            new_row = pd.DataFrame([new_entry])
-            st.session_state['data'] = pd.concat([st.session_state['data'], new_row], ignore_index=True)
-            st.success("New reservation added!")
-
-    # --- Step 6: Download Updated CSV
-    st.header("⬇️ 5. Download Updated Reservations")
-    st.download_button(
-        label="Download Updated CSV",
-        data=st.session_state['data'].to_csv(index=False).encode('utf-8'),
-        file_name='updated_reservations.csv',
-        mime='text/csv'
-    )
-
-else:
-    st.info("👈 Please upload your reservations CSV to begin.")
+if __name__ == "__main__":
+    main()
