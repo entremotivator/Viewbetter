@@ -1,10 +1,19 @@
 import streamlit as st
 import pandas as pd
 import io
+import requests
+import json
 from datetime import date
 
 st.set_page_config(page_title="Reservation Manager", layout="wide")
 st.title("🏡 Multi-Property Reservation Manager")
+
+# n8n webhook configuration
+N8N_WEBHOOK_URL = st.sidebar.text_input(
+    "n8n Webhook URL", 
+    placeholder="https://your-n8n-instance.com/webhook/your-webhook-id",
+    help="Enter your n8n webhook URL"
+)
 
 # Session state init
 if 'property_count' not in st.session_state:
@@ -78,7 +87,7 @@ def reservation_form(index):
         return {
             "Reservation #": index + 1,
             "Client Name": client_name,
-            "Reservation Date": reservation_date,
+            "Reservation Date": str(reservation_date),
             "Property Address": prop_address,
             "Property Setting": custom_setting if property_setting == "Custom" else property_setting,
             "Villa Name": villa_name,
@@ -110,10 +119,80 @@ def format_reservations_to_csv(data):
         flat_data.append(base)
     return pd.DataFrame(flat_data)
 
+# Function to send data to n8n
+def send_to_n8n(webhook_url, csv_data, reservations_data):
+    try:
+        payload = {
+            "csv_data": csv_data.decode('utf-8'),
+            "reservations": reservations_data,
+            "timestamp": str(date.today()),
+            "total_reservations": len(reservations_data)
+        }
+        
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return True, "Data sent successfully to n8n!"
+        else:
+            return False, f"Error: {response.status_code} - {response.text}"
+    
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
 # Submit and export
 if st.button("✅ Submit & Save as CSV"):
     df = format_reservations_to_csv(reservations)
     csv_data = df.to_csv(index=False).encode('utf-8')
+    
+    # Always show success message and download button
     st.success("✅ Reservation data saved!")
     st.download_button("📥 Download CSV", csv_data, file_name="reservations.csv", mime="text/csv")
+    
+    # Send to n8n if webhook URL is provided
+    if N8N_WEBHOOK_URL:
+        with st.spinner("Sending data to n8n..."):
+            success, message = send_to_n8n(N8N_WEBHOOK_URL, csv_data, reservations)
+            
+            if success:
+                st.success(f"🚀 {message}")
+            else:
+                st.error(f"❌ Failed to send to n8n: {message}")
+    else:
+        st.info("💡 Add your n8n webhook URL in the sidebar to automatically send data to n8n")
+    
+    # Display the data
     st.dataframe(df)
+
+# Display current configuration
+if N8N_WEBHOOK_URL:
+    st.sidebar.success("✅ n8n webhook configured")
+else:
+    st.sidebar.warning("⚠️ No n8n webhook URL configured")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📋 Usage Instructions")
+st.sidebar.markdown("""
+1. Enter your n8n webhook URL in the sidebar
+2. Fill out reservation forms
+3. Click 'Submit & Save as CSV'
+4. Data will be sent to n8n automatically
+5. Download CSV file as backup
+""")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔗 n8n Payload Structure")
+st.sidebar.code("""
+{
+    "csv_data": "string (CSV content)",
+    "reservations": [...],
+    "timestamp": "YYYY-MM-DD",
+    "total_reservations": number
+}
+""", language="json")
